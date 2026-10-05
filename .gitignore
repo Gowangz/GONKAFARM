@@ -1,0 +1,12 @@
+# output
+Apikey.txt
+accounts.txt
+state.json
+state.json.tmp
+.router9_state.json
+logs/
+__pycache__/
+*.pyc
+
+# creds
+.env
