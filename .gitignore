@@ -7,6 +7,12 @@ state.json.tmp
 logs/
 __pycache__/
 *.pyc
+*.log
+results.json
+wallet_info.json
+keys.txt
 
 # creds
 .env
+.env.local
+
