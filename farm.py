@@ -209,8 +209,15 @@ def register_one(seq: int, mail: MailClient, target: int) -> bool:
     return False
 
 
-def worker(mail: MailClient, q: "queue.Queue[int]", results: dict) -> None:
-    """Konsumsi seq dari queue hingga ketik sentinel (None = selesai)."""
+def worker(mail: MailClient | None, q: "queue.Queue[int]", results: dict) -> None:
+    """Konsumsi seq dari queue hingga ketik sentinel (None = selesai).
+
+    Setiap worker bikin MailClient sendiri (session-id per thread), jadi
+    polling OTP tidak saling mengunci antar worker.
+    """
+    if mail is None:
+        mail = MailClient()
+        mail.new_session()
     while True:
         seq = q.get()  # memblokir sampai ada tugas atau sentinel
         if seq is None:
@@ -233,10 +240,6 @@ def cmd_farm(args) -> None:
     state = load_state()
     start_seq = state["seq"] + 1
 
-    mail = MailClient()
-    mail.new_session()
-    log(f"mail session: {mail.session_id[:8]}...")
-
     seq = start_seq
     while True:
         batch = []
@@ -252,7 +255,7 @@ def cmd_farm(args) -> None:
         for s in batch:
             q.put(s)
         results: dict[int, bool] = {}
-        threads = [threading.Thread(target=worker, args=(mail, q, results),
+        threads = [threading.Thread(target=worker, args=(None, q, results),
                                     daemon=True) for _ in range(len(batch))]
         for t in threads:
             t.start()
@@ -315,9 +318,6 @@ def cmd_unlimited(args) -> None:
 
     state = load_state()
     seq = state["seq"] + 1
-    mail = MailClient()
-    mail.new_session()
-    log(f"mail session: {mail.session_id[:8]}...")
 
     q: "queue.Queue[int]" = queue.Queue()
     results: dict[int, bool] = {}
@@ -342,7 +342,7 @@ def cmd_unlimited(args) -> None:
             log(f"[STATS] sukses={done} gagal={fail} rate={rate:.1f}/min "
                 f"uptime={uptime/60:.0f}m 9router={r9} key")
 
-    threads = [threading.Thread(target=worker, args=(mail, q, results),
+    threads = [threading.Thread(target=worker, args=(None, q, results),
                                 daemon=True) for _ in range(workers)]
     for t in threads:
         t.start()

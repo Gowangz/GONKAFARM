@@ -6,7 +6,7 @@ CHANNEL = "gonka"
 
 # ── Rate-limit strategy (3 modes, rotated per account) ──────────
 # Terukur: ceiling ~30 req/menit per IP. Proxy = IP baru per request.
-PROXY = "http://127.0.0.1:8888"
+PROXY = "http://customer-resi_8ca33b6f-sessid-0817767014-sesstime-10:SVfb3=otN13f@pr.oxylabs.io:7777"
 REQUEST_TIMEOUT = 45
 
 # ── Timing (detik) ──────────────────────────────────────────────
@@ -22,7 +22,7 @@ STATE_FILE = "state.json"
 LOG_FILE = "logs/gonkafarm.log"
 
 # ── Runtime ─────────────────────────────────────────────────────
-WORKERS = 3
+WORKERS = 6
 MAX_ACCOUNTS = 0       # 0 = tak terbatas
 DELAY_BETWEEN_ACCOUNTS = 0   # jeda setelah akun selesai (mode turbo)
 

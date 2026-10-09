@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import re
-import threading
 import time
 import urllib.error
 import urllib.parse
@@ -35,11 +34,10 @@ def _parse_ts(s: str) -> float:
 class MailClient:
     """Satu session = satu kumpulan inbox.
 
-    Thread-safe: create_inbox / wait_otp diserialisasi via lock global agar
-    session-id dan inbox pointer tidak tertukar antar worker.
+    Satu instance = satu thread (satu worker). Tidak ada lock: session-id dan
+    inbox pointer tidak pernah diakses lintas worker, karena setiap worker
+    memakai local part-nya sendiri.
     """
-
-    _global = threading.Lock()
 
     def __init__(self) -> None:
         self.session_id = ""
@@ -78,8 +76,7 @@ class MailClient:
     # ── public ──────────────────────────────────────────────────
 
     def new_session(self) -> str:
-        with MailClient._global:
-            self.session_id = str(self._req("GET", "/api/session", retry=2).get("sessionId", ""))
+        self.session_id = str(self._req("GET", "/api/session", retry=2).get("sessionId", ""))
         if not self.session_id:
             raise RuntimeError("mail: sessionId kosong")
         return self.session_id
@@ -88,11 +85,10 @@ class MailClient:
         """Buat inbox untuk local_part. Idempoten (sudah ada = no-op)."""
         if not self.session_id:
             self.new_session()
-        with MailClient._global:
-            self._req("POST", "/api/inboxes",
-                      body={"localPart": local_part, "domain": "nodexdigital.web.id"})
-            addr = f"{local_part}@nodexdigital.web.id"
-            self._inbox = addr
+        self._req("POST", "/api/inboxes",
+                  body={"localPart": local_part, "domain": "nodexdigital.web.id"})
+        addr = f"{local_part}@nodexdigital.web.id"
+        self._inbox = addr
         return addr
 
     def _messages(self, inbox: str) -> list[dict]:
@@ -115,8 +111,7 @@ class MailClient:
         deadline = time.monotonic() + timeout_s
         seen_ids = self._seen.setdefault(inbox, set())
         while time.monotonic() < deadline:
-            with MailClient._global:
-                msgs = self._messages(inbox)
+            msgs = self._messages(inbox)
             for msg in msgs:
                 mid = msg.get("id", "")
                 if mid in seen_ids:

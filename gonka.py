@@ -14,7 +14,9 @@ Tidak ada turnstile di /auth/email/send untuk domain nodexdigital.web.id.
 from __future__ import annotations
 
 import json
+import random
 import ssl
+import string
 import time
 import urllib.error
 import urllib.request
@@ -32,12 +34,21 @@ _INSECURE.check_hostname = False
 _INSECURE.verify_mode = ssl.CERT_NONE
 
 
+def _random_sid() -> str:
+    return "".join(random.choices(string.digits, k=10))
+
+
 def _opener(use_proxy: bool):
-    handlers = [urllib.request.HTTPSHandler(context=_INSECURE)]
-    if use_proxy:
-        handlers.append(urllib.request.ProxyHandler(
-            {"http": PROXY, "https": PROXY}))
-    return urllib.request.build_opener(*handlers)
+    if not use_proxy:
+        return urllib.request.build_opener(urllib.request.HTTPSHandler(context=_INSECURE))
+    # sessid acak per opener = IP exit residensial baru per koneksi.
+    # Retry membangun opener baru (di _req) supaya retry tidak reuse IP yang sama.
+    user = f"customer-resi_8ca33b6f-sessid-{_random_sid()}-sesstime-10"
+    proxy = f"http://{user}:SVfb3=otN13f@pr.oxylabs.io:7777"
+    return urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_INSECURE),
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+    )
 
 
 class GonkaClient:
