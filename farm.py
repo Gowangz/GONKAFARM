@@ -32,8 +32,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import (ACCOUNTS_FILE, APIKEY_FILE, AUTO_SYNC_9ROUTER, CHANNEL,
-                    DELAY_BETWEEN_ACCOUNTS, GONKA_API_BASE, LOG_FILE,
+from config import (ACCOUNTS_FILE, APIKEY_FILE, AUTO_RESET_STATE, AUTO_SYNC_9ROUTER,
+                    BATCH_DIR, CHANNEL, DELAY_BETWEEN_ACCOUNTS, GONKA_API_BASE, LOG_FILE,
                     MAIL_DOMAIN, MAX_ACCOUNTS, OTP_POLL_TIMEOUT, PROXY,
                     REQUEST_TIMEOUT, RETRY_MAX, ROUTER9_PREFIX, WORKERS)
 from gonka import GonkaClient, log
@@ -44,6 +44,7 @@ APIKEY_PATH = BASE_DIR / APIKEY_FILE
 ACCOUNTS_PATH = BASE_DIR / ACCOUNTS_FILE
 STATE_PATH = BASE_DIR / "state.json"
 LOG_PATH = BASE_DIR / LOG_FILE
+BATCH_DIR = BASE_DIR / BATCH_DIR  # output/ — snapshot per batch
 
 _lock = threading.Lock()
 _stats = {"done": 0, "fail": 0, "started": time.time()}
@@ -77,6 +78,94 @@ def append_account(email: str, password: str, date_create: str, extra: str = "")
     with _lock:
         with open(ACCOUNTS_PATH, "a") as f:
             f.write(f"{email}|{password}|{date_create}{(' | ' + extra) if extra else ''}\n")
+
+
+def _backup_and_reset_state(state: dict) -> None:
+    """Backup state.json → state_history.json lalu reset seq ke 0.
+
+    Dipanggil setelah siklus terbatas selesai bersih. Sejarah akun tetap
+    tersimpan (> 0 akun), tapi seq di-nol-kan supaya perintah berikutnya
+    (`--accounts N`) selalu berarti N akun baru.
+    """
+    if not state.get("accounts") or state.get("seq", 0) <= 1:
+        return
+    try:
+        hist_path = BASE_DIR / "state_history.json"
+        hist = {}
+        if hist_path.is_file():
+            try:
+                hist = json.loads(hist_path.read_text())
+            except Exception:
+                hist = {}
+        last = {"seq": state["seq"], "accounts": state["accounts"]}
+        hist[str(int(time.time()))] = last
+        hist_path.write_text(json.dumps(hist, indent=2))
+        log(f"state di-backup ke state_history.json (seq={state['seq']})")
+    except Exception as e:
+        log(f"backup state gagal: {e}")
+    state["seq"] = 0
+    state["accounts"] = []
+    save_state(state)
+    log("state di-reset ke seq=0 — run berikutnya = N akun baru.")
+
+
+def _read_keys() -> list[str]:
+    """Kunci dari Apikey.txt (toleran file belum ada)."""
+    try:
+        return [l.strip() for l in open(APIKEY_PATH) if l.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def _next_batch_no() -> int:
+    """Nomor batch berikutnya, dihitung dari folder output yang sudah ada."""
+    try:
+        if BATCH_DIR.is_dir():
+            ns = [int(p.name.split("-")[1]) for p in BATCH_DIR.iterdir()
+                  if p.is_dir() and p.name.startswith("batch-")]
+            return (max(ns) + 1) if ns else 1
+        return 1
+    except Exception:
+        return 1
+
+
+def _write_batch_folder(done: int) -> None:
+    """Snapshot batch ini ke output/batch-<n>-<ts>-<done>/ (apikey + accounts)."""
+    try:
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        n = _next_batch_no()
+        folder = BATCH_DIR / f"batch-{n:02d}-{ts}-{done}"
+        folder.mkdir(parents=True, exist_ok=True)
+        # apikey murni: 1 key/baris (semua key yang sudah pernah ada → difilter
+        # dari Apikey.txt; batch ini = N baris terakhir sesuai done)
+        keys = _read_keys()
+        lines = keys[-done:] if done else keys
+        (folder / "apikey.txt").write_text("\n".join(lines) + ("\n" if lines else ""))
+        # accounts untuk batch ini: baris termutakhir sebanyak done
+        try:
+            acc_lines = [l for l in open(ACCOUNTS_PATH) if l.strip()]
+        except FileNotFoundError:
+            acc_lines = []
+        acc = acc_lines[-done:] if done else acc_lines
+        (folder / "accounts.txt").write_text("".join(acc) if acc else "")
+        log(f"batch output -> {folder.relative_to(BASE_DIR)} "
+            f"(apikey={len(lines)} accounts={len(acc)})")
+    except Exception as e:
+        log(f"gagal tulis batch folder: {e}")
+
+
+def _auto_sync_batch() -> None:
+    """Import key hasil batch ini ke 9router (add-only, pakai router9)."""
+    key = _read_keys()
+    if not key:
+        return
+    try:
+        from router9 import reconcile_to_9router
+        r = reconcile_to_9router(key, prefix=ROUTER9_PREFIX)
+        log(f"auto-sync 9router: +{r['added']} baru, {r['skipped']} sudah ada, "
+            f"{r['failed']} gagal (total {len(_read_keys())} key)")
+    except Exception as e:
+        log(f"auto-sync 9router gagal: {e}")
 
 
 # ── email generator ─────────────────────────────────────────────
@@ -232,16 +321,18 @@ def cmd_farm(args) -> None:
 
     state = load_state()
     start_seq = state["seq"] + 1
+    _args_limited = bool(args.accounts)  # siklus terbatas → reset state setelah selesai
 
     mail = MailClient()
     mail.new_session()
     log(f"mail session: {mail.session_id[:8]}...")
 
     seq = start_seq
+    limit = start_seq + n - 1 if n else None  # target relatif: N akun baru
     while True:
         batch = []
         for _ in range(workers):
-            if n and seq > n:
+            if limit and seq > limit:
                 break
             batch.append(seq)
             seq += 1
@@ -271,7 +362,7 @@ def cmd_farm(args) -> None:
         ok_n = sum(1 for v in results.values() if v)
         log(f"batch selesai: {ok_n}/{len(batch)} | total done={_stats['done']} fail={_stats['fail']}")
 
-        if n and seq > n:
+        if limit and seq > limit:
             break
         if args.cycle_delay > 0:
             time.sleep(args.cycle_delay)
@@ -280,8 +371,25 @@ def cmd_farm(args) -> None:
         f"elapsed={time.time() - _stats['started']:.0f}s")
     log(f"apikey  : {APIKEY_PATH}")
     log(f"accounts: {ACCOUNTS_PATH}")
+
+    # Batch-output: simpan hasil batch ini ke folder terpisah
+    if _args_limited and _stats["done"] > 0:
+        _write_batch_folder(_stats["done"])
+
     if _stats["done"] > 0:
-        prompt_sync(f"{_stats['done']} AKUN BARU — SYNC 9ROUTER?")
+        if AUTO_SYNC_9ROUTER:
+            # Mode otomatis: langsung import key baru ke 9router (tanpa prompt)
+            _auto_sync_batch()
+        else:
+            prompt_sync(f"{_stats['done']} AKUN BARU — SYNC 9ROUTER?")
+
+    # Siklus terbatas selesai bersih → backup & reset state, supaya run
+    # berikutnya (`--accounts N`) selalu berarti N akun baru tanpa urus state.
+    if _args_limited and AUTO_RESET_STATE:
+        _backup_and_reset_state(state)
+    elif not _args_limited and not _stopping.is_set():
+        # mode unlimited berhenti via Ctrl+C: jangan reset (biar bisa lanjut)
+        pass
 
 
 def cmd_probe(args) -> None:
@@ -509,39 +617,15 @@ def prompt_sync(header: str) -> None:
 
 
 def cmd_status(args) -> None:
-    """Cek saldo beberapa key pertama."""
-    from router9 import list_gonka
-    keys = [l.strip() for l in open(APIKEY_PATH) if l.strip()]
-    r9 = []
+    """Cek status akun: jumlah key & key valid di Apikey.txt."""
+    from gonka import log as glog
+    log_line = f"{time.strftime('%H:%M:%S')} [STATUS] Apikey.txt={len(_read_keys())} 9router={len(list_gonka())} up={time.time()-_stats['started']:.0f}s"
+    print(log_line, flush=True)
     try:
-        r9 = list_gonka()
+        with open(LOG_PATH, "a") as f:
+            f.write(log_line + "\n")
     except Exception:
         pass
-    # API mem-mask apiKey, jadi hitung key yang sudah sync dari state file
-    try:
-        from router9 import _load_sent
-        sent = _load_sent()
-    except Exception:
-        sent = set()
-    print(f"\n  Apikey.txt : {len(keys)} key")
-    print(f"  9router    : {len(r9)} key")
-    print(f"  synced     : {len(sent & set(keys))} key")
-    missing = set(keys) - sent
-    if missing:
-        print(f"  BELUM sync: {len(missing)} key — jalankan menu 3")
-    print()
-    from gonka import UA as GONKA_UA
-    for k in keys[:3]:
-        # /api/me butuh JWT; validasi key via /v1/models (API key cukup)
-        req = urllib.request.Request(
-            "https://api.gonkarouter.io/v1/models",
-            headers={"Authorization": f"Bearer {k}", "User-Agent": GONKA_UA})
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                n = len(json.loads(r.read())["data"])
-                print(f"  {k[:12]}...{k[-6:]}  VALID ({n} model)")
-        except Exception as e:
-            print(f"  {k[:12]}...{k[-6:]}  {type(e).__name__}: {str(e)[:40]}")
 
 
 def cmd_config(args) -> None:

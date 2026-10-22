@@ -121,16 +121,35 @@ Fitur:
 - **Polling 2 detik** sesuai rekomendasi docs.
 - `balance()` + `estimate_solves()` untuk cek sisa kuota.
 
-## Status: CADANGAN (belum dipakai farm)
+## Status: AKTIF (dipakai farm)
 
-**GonkaRouter saat ini tidak meminta Turnstile** di endpoint manapun yang
-dipakai farm ini. `solver.py` disiapkan untuk skenario jika tiba-tiba
-diwajibkan.
+**Sejak 2026-10, GonkaRouter mewajibkan Turnstile** di endpoint
+`POST /auth/email/send`. `solver.py` dipanggil oleh `gonka.py` setiap
+`send_otp` untuk menghasilkan `turnstile_token`; tanpa token server balas
+`challenge_failed: human verification failed`.
 
-Berdasarkan riwayat proyek sebelumnya (GROKFARM, BRIGHTDATA-FARM), Waryono
-cenderung kembali `ERROR_CAPTCHA_UNSOLVABLE` untuk Turnstile di origin
-tertentu (x.ai, brightdata.com). Untuk GonkaRouter belum pernah dicoba karena
-memang tidak butuh.
+### Bug yang Diperbaiki (2026-10-23)
+
+`api.waryono.my.id` memblokir request dari `urllib` tanpa header browser
+lengkap → `HTTP 403 error code: 1010` (Cloudflare anti-bot). Perbaikan di
+`_post_json`:**tambah header** `Accept`, `Accept-Language`, `Origin: waryono.my.id`,
+`Referer`. Setelah fix, turnstile tersolve (`OK len=730`) dalam ~12-30s.
+
+```python
+# solver.py — _post_json()
+headers = {
+    "Content-Type": "application/json",
+    "User-Agent": UA,
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://waryono.my.id",
+    "Referer": "https://waryono.my.id/",
+}
+```
+
+> Headers harus dikirim dengan **apikey asli** dan `domain` / `url` / `sitekey`
+> sesuai target. `ERROR_SLOT_NOT_AVAILABLE` (429) adalah throttle sesaat —
+> retry default (`turnstile()`) menanganinya.
 
 ### Cara Aktivasi Jika Nanti Butuh
 

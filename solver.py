@@ -87,7 +87,12 @@ def _post_json(path: str, payload: dict, timeout: int = 60) -> dict:
     _rl.wait()
     req = urllib.request.Request(
         f"{BASE}{path}", data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "User-Agent": UA}, method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": UA,
+                "Accept": "application/json",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Origin": "https://waryono.my.id",
+                "Referer": "https://waryono.my.id/"},
+        method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())

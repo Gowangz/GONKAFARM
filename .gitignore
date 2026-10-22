@@ -4,6 +4,10 @@ accounts.txt
 state.json
 state.json.tmp
 .router9_state.json
+# batch folder per-run (berisi key + akun sensitif)
+output/
+# backup state per-siklus (data akun)
+state_history.json
 logs/
 __pycache__/
 *.pyc
@@ -15,4 +19,6 @@ keys.txt
 # creds
 .env
 .env.local
+# kredensial proxy
+webshare-proxy.txt
 

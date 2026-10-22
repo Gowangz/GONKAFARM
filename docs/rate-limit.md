@@ -57,6 +57,12 @@ def next_channel(seq: int) -> str:
 | `proxy` | `127.0.0.1:8888` | IP baru per request = kuota baru |
 | `cache` | direct | OTP di-cache 10 menit, hemat poll mail worker |
 
+**Update 2026-10-23**: sebelumnya `PROXY` menunjuk ke Oxylabs
+(`pr.oxylabs.io:7777`) yang kembali `502 Bad gateway: exit node not found
+(session ended)` — sesi niche expired, maka semua request `via proxy` gagal
+diexit. Ganti ke `127.0.0.1:8888` (proxy lokal, rotating IP, exit IP fresh)
+yang terbukti OK (`8888->gonka: 51.8s OK`). Oxylabs tidak lagi dipakai.
+
 ### Fallback Antar Channel
 
 Jika channel utama gagal (proxy 403, 429, SSL error setelah retry habis),
@@ -89,23 +95,37 @@ Target awal **1 menit = 2 akun minimal** **terlampaui**:
 
 ```python
 # config.py
-WORKERS = 3            # paralel worker; naikkan = lebih cepat
+WORKERS = 1            # paralel worker; naikkan = lebih cepat (tapi lebih rawan 429)
 MAX_ACCOUNTS = 0       # 0 = tak terbatas
-DELAY_BETWEEN_ACCOUNTS = 0
+DELAY_BETWEEN_ACCOUNTS = 45   # cooldown antar akun (detik), hindari 429 server
 ```
 
-Aturan praktis berdasarkan pengukuran:
+Aturan praktis berdasarkan pengukuran (lihat tabel workers di atas):
+- **`WORKERS=1` + `DELAY_BETWEEN_ACCOUNTS=45`** (default, teruji stabil):
+  ~1-1.5 akun/menit, 18/20 sukses tanpa 429 beruntun.
+- `WORKERS=3` + `DELAY=0` (turbo): lebih cepat tapi rentan 429/proxy 504.
 
-| Workers | Aman | Agresif | Catatan |
-|---|---|---|---|
-| 1-2 | ✅ | ✅ | direct saja cukup |
-| 3-5 | ✅ | ⚠️ | mulai butuh proxy untuk distribusi |
-| 6-10 | ⚠️ | ❌ | 429 pasti muncul; farm auto-retry tapi melambat |
-| 10+  | ❌ | ❌ | waste request; ceiling 30/menit/IP jadi penghalang |
+### Kenapa stabil (update 2026-10-23)
 
-**Rekomendasi**: `WORKERS=3` untuk 24/7 aman, `WORKERS=5` untuk burst
-sebentar. Tingkatkan bukan paralelisme tapi **jumlah IP** (proxy pool lebih
-besar) kalau mau lebih cepat.
+1. **Proxy 127.0.0.1:8888** bukan Oxylabs — setiap request exit IP beda
+   (rotating), jadi kuota 30/menit per IP punya super banyak IP segar.
+2. **Cooldown 45s** antar akun memberi server waktu reset budget per-IP.
+3. **Turnstile solver** di-fix header browser (lihat docs/solver.md) —
+   tanpa token server tolak `challenge_failed`.
+
+### Sertakan Catatan: Proxy Sendiri / Petani-Proxy
+
+Farming butuh **proxy sendiri** supaya kuota IP tidak cepat habis. Dua
+pilihan:
+
+- **Proxy residensial berbayar** (Oxylabs, BrightData, dll) — isi di
+  `config.py → PROXY`. Perhatikan **sesi niche/expired** → ganti kredensial
+  baru saat mulai `502 Bad gateway: exit node not found`.
+- **Petani-Proxy** (repo lokal, endpoint `127.0.0.1:8888`) — proxy
+  efisien yang rotating IP tiap request, exit IP residensial/fresh.
+  **Gunakan langsung tanpa perlu operasi apa pun pada prosesnya** — cukup
+  pasti port 8888 hidup. (Jangan restart/modify program petani-proxy;
+  jalankan sebagaimana sudah terpasang.)
 
 ## Deteksi Rate Limit di Kode
 

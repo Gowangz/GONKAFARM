@@ -20,7 +20,8 @@ import urllib.error
 import urllib.request
 
 from config import (CHANNEL, GONKA_API_BASE, LOG_FILE, PROXY, REQUEST_TIMEOUT,
-                    RETRY_BACKOFF, RETRY_MAX)
+                    RETRY_BACKOFF, RETRY_MAX, TURNSTILE_SITEKEY)
+from solver import turnstile
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -99,8 +100,11 @@ class GonkaClient:
     # ── public ──────────────────────────────────────────────────
 
     def send_otp(self, email: str) -> dict:
-        return self._req("POST", "/auth/email/send",
-                         body={"email": email, "channel": CHANNEL})
+        body = {"email": email, "channel": CHANNEL}
+        tok = turnstile("api.gonkarouter.io", TURNSTILE_SITEKEY)
+        if tok:
+            body["turnstile_token"] = tok
+        return self._req("POST", "/auth/email/send", body=body)
 
     def verify_otp(self, email: str, code: str) -> dict:
         r = self._req("POST", "/auth/email/verify",
