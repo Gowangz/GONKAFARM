@@ -31,7 +31,7 @@ BASE_URL = "http://127.0.0.1:20128"
 # provider id stabil — sama dengan yang dipakai dashboard untuk GonkaRouter.
 # Ambil dari GET /api/providers milik "Key 1" manual, supaya key hasil script
 # bergabung dengan provider yang sudah ada, bukan bikin kelompok baru.
-PROVIDER = "openai-compatible-chat-d8f0def1-8be1-4deb-b58f-241f3cb45ef6"
+PROVIDER = "openai-compatible-chat-5dfa838c-9aac-406b-9fa1-74eb916a8a31"
 
 _HERE = Path(__file__).resolve().parent
 _ENV_PATH = _HERE / ".env"

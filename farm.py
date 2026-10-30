@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (ACCOUNTS_FILE, APIKEY_FILE, AUTO_RESET_STATE, AUTO_SYNC_9ROUTER,
                     BATCH_DIR, CHANNEL, DELAY_BETWEEN_ACCOUNTS, GONKA_API_BASE, LOG_FILE,
                     MAIL_DOMAIN, MAX_ACCOUNTS, OTP_POLL_TIMEOUT, PROXY,
-                    REQUEST_TIMEOUT, RETRY_MAX, ROUTER9_PREFIX, WORKERS)
+                    REQUEST_TIMEOUT, RETRY_MAX, ROUTER9_PREFIX, WORKERS, fresh_proxy)
 from gonka import GonkaClient, log
 from mail import MailClient
 
@@ -234,7 +234,7 @@ _otp_cache = OtpCache()
 # ── worker ──────────────────────────────────────────────────────
 
 
-def register_one(seq: int, mail: MailClient, target: int) -> bool:
+def register_one(seq: int, mail: MailClient, target: int, do_bonus: bool = False) -> bool:
     chan = next_channel(seq)
     local = gen_local_part(seq)
     email = f"{local}@{MAIL_DOMAIN}"
@@ -250,8 +250,12 @@ def register_one(seq: int, mail: MailClient, target: int) -> bool:
         log(f"[#{seq}] inbox gagal: {e}")
         return False
 
-    # urutan channel: utama dulu, lalu fallback. Proxy 8888 sering 403 di IP
-    # tertentu; direct aman selama belum menyentuh ceiling ~30/menit.
+    # urutan channel: utama dulu, lalu fallback. Proxy Oxylabs (IP residential)
+    # adalah channel andal — tak di-flag Turnstile, jadi dipakai untuk SEMUA akun
+    # dengan sessid fresh per akun (IP baru → hindari 429). Direct/cache hanya
+    # fallback terakhir (IP lokal di-flag → sering challenge_failed).
+    chan = "proxy"
+    proxy_url = fresh_proxy()  # IP baru untuk akun ini
     chan_order = [chan] + [c for c in CHANNELS if c != chan]
 
     def get_code(lp: str, attempt: int = 0) -> str | None:
@@ -262,7 +266,7 @@ def register_one(seq: int, mail: MailClient, target: int) -> bool:
         # attempt > 0 = fallback: OTP sebelumnya mungkin hangus, kirim ulang dan
         # hanya baca email yang masuk setelah permintaan ini.
         if attempt > 0:
-            again = GonkaClient(use_proxy=False).send_otp(email)
+            again = GonkaClient(use_proxy=True, proxy=proxy_url).send_otp(email)
             if not again.get("success"):
                 log(f"[#{seq}] resend OTP gagal: {again}")
                 return None
@@ -277,7 +281,7 @@ def register_one(seq: int, mail: MailClient, target: int) -> bool:
         return code
 
     for i, try_chan in enumerate(chan_order):
-        gc = GonkaClient(use_proxy=try_chan == "proxy")
+        gc = GonkaClient(use_proxy=try_chan == "proxy", proxy=proxy_url if try_chan == "proxy" else None)
         try:
             res = gc.signup(email, get_code=lambda lp: get_code(lp, i))
         except Exception as e:
@@ -286,9 +290,28 @@ def register_one(seq: int, mail: MailClient, target: int) -> bool:
         if res:
             api_key = res["api_key"]
             append_apikey(api_key)
-            append_account(email, password, time.strftime("%Y-%m-%d %H:%M:%S"),
-                           extra=f"uid={res.get('user_id')} balance={res.get('balance')} ch={try_chan}")
-            log(f"[#{seq}] OK  key=...{api_key[-6:]}  balance={res.get('balance')}")
+            bal_final = res.get("balance", "?")
+
+            # Bonus activation: first-call untuk klaim free token
+            if do_bonus and api_key:
+                bonus_result = gc.activate_bonus(api_key)
+                bal_before  = bonus_result["balance_before"]
+                bal_after   = bonus_result["balance_after"]
+                tok_before  = bonus_result["tokens_before"]
+                tok_after   = bonus_result["tokens_after"]
+                called_ok   = bonus_result["called"]
+                err         = bonus_result["error"]
+                bal_final   = bal_after
+                log(f"[#{seq}] bonus  usdt {bal_before}→{bal_after}  "
+                    f"tokens {tok_before}→{tok_after}  "
+                    f"call_ok={called_ok} {'⚠️ ' + str(err)[:60] if err else '✅'}")
+                extra = (f"uid={res.get('user_id')} balance={bal_after} "
+                         f"tokens={tok_after} ch={try_chan}")
+            else:
+                extra = f"uid={res.get('user_id')} balance={bal_final} ch={try_chan}"
+
+            append_account(email, password, time.strftime("%Y-%m-%d %H:%M:%S"), extra=extra)
+            log(f"[#{seq}] OK  key=...{api_key[-6:]}  balance={bal_final}")
             return True
         # OTP sudah dipakai (atau hangus) -> bersihkan agar tidak dipakai ulang
         _otp_cache.pop(email)
@@ -298,13 +321,14 @@ def register_one(seq: int, mail: MailClient, target: int) -> bool:
     return False
 
 
-def worker(mail: MailClient, q: "queue.Queue[int]", results: dict) -> None:
-    """Konsumsi seq dari queue hingga ketik sentinel (None = selesai)."""
+def worker(mail: MailClient, q: "queue.Queue[tuple[int, bool]]", results: dict) -> None:
+    """Konsumsi (seq, do_bonus) dari queue hingga ketik sentinel (None = selesai)."""
     while True:
-        seq = q.get()  # memblokir sampai ada tugas atau sentinel
-        if seq is None:
+        item = q.get()  # memblokir sampai ada tugas atau sentinel
+        if item is None:
             return
-        ok = register_one(seq, mail, 0)
+        seq, do_bonus = item
+        ok = register_one(seq, mail, 0, do_bonus=do_bonus)
         with _lock:
             results[seq] = ok
             _stats["done" if ok else "fail"] += 1
@@ -334,14 +358,14 @@ def cmd_farm(args) -> None:
         for _ in range(workers):
             if limit and seq > limit:
                 break
-            batch.append(seq)
+            batch.append((seq, args.bonus))
             seq += 1
         if not batch:
             break
-        batch_max = max(batch)  # simpan sebelum worker menghabiskan queue
-        q: "queue.Queue[int]" = queue.Queue()
-        for s in batch:
-            q.put(s)
+        batch_max = max(s for s, _ in batch)
+        q: "queue.Queue[tuple[int, bool]]" = queue.Queue()
+        for item in batch:
+            q.put(item)
         results: dict[int, bool] = {}
         threads = [threading.Thread(target=worker, args=(mail, q, results),
                                     daemon=True) for _ in range(len(batch))]
@@ -688,6 +712,8 @@ def main() -> None:
     p.add_argument("--probe", type=int, default=0, help="mode uji rate limit: N request paralel")
     p.add_argument("--channel", default="direct", choices=["direct", "proxy"],
                    help="channel untuk probe")
+    p.add_argument("--bonus", action="store_true",
+                   help="aktifkan first-call bonus per akun lalu cek saldo (lebih lambat)")
     args = p.parse_args()
 
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)

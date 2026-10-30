@@ -8,7 +8,21 @@ CHANNEL = "gonka"
 # Terukur: ceiling ~30 req/menit per IP. Proxy = rotating IP per request.
 # Oxylabs (`pr.oxylabs.io`) kembali 502 session expired → pindah ke proxy
 # lokal 127.0.0.1:8888 (rotating, exit IP fresh, terbukti OK ke Gonka 51.8s).
-PROXY = "http://127.0.0.1:8888"
+import re as _re
+import uuid as _uuid
+
+# ── Oxylabs residential: rotate sessid per call → IP fresh tiap akun ──
+_SESS_RE = _re.compile(r"sessid-[0-9]+")
+
+
+def fresh_proxy() -> str:
+    """Ganti sessid pada PROXY Oxylabs agar tiap panggilan dapat IP baru
+    (sticky session sesstime-N mengunci ke 1 IP; reset sessid = IP baru,
+    menghindari HTTP 429 setelah beberapa request dari IP sama)."""
+    return _SESS_RE.sub(f"sessid-{_uuid.uuid4().hex[:12]}", PROXY)
+
+
+PROXY = "http://customer-resi_8ca33b6f-sessid-0628953669-sesstime-10:SVfb3=otN13f@pr.oxylabs.io:7777"
 REQUEST_TIMEOUT = 45
 
 # ── Turnstile (diwajibkan sejak 2026) ─────────────────────────────
