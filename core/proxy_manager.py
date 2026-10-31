@@ -237,7 +237,7 @@ def _start_gateway_server(port: int):
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(_start_gateway_server(port))
+        loop.run_until_complete(_start_gateway(port))
     except Exception as e:
         log.error(f"Gateway startup failed: {e}")
     finally:
