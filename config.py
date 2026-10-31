@@ -1,4 +1,5 @@
 # ── GONKAFARM core ──────────────────────────────────────────────
+from pathlib import Path
 GONKA_API_BASE = "https://api.gonkarouter.io"
 GONKA_MAIL_BASE = "https://mail.nodexdigital.web.id"
 MAIL_DOMAIN = "nodexdigital.web.id"
@@ -9,6 +10,9 @@ CHANNEL = "gonka"
 # Oxylabs (`pr.oxylabs.io`) kembali 502 session expired → pindah ke proxy
 # lokal 127.0.0.1:8888 (rotating, exit IP fresh, terbukti OK ke Gonka 51.8s).
 import re as _re
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent) + '/core')
+from proxy_manager import start_gateway, get_proxy, get_proxy_url, refresh_pool
 import uuid as _uuid
 
 # ── Oxylabs residential: rotate sessid per call → IP fresh tiap akun ──
@@ -23,6 +27,10 @@ def fresh_proxy() -> str:
 
 
 PROXY = "http://customer-resi_8ca33b6f-sessid-0628953669-sesstime-10:SVfb3=otN13f@pr.oxylabs.io:7777"
+
+# Proxy Gateway (opsional: dari petani-proxy harvester)
+PROXY_GATEWAY = "http://127.0.0.1:8888"  # kosongkan jika tidak digunakan
+HARVEST_MAX_PROXIES = 50  # maksimal proxy di panen per siklus
 REQUEST_TIMEOUT = 45
 
 # ── Turnstile (diwajibkan sejak 2026) ─────────────────────────────
