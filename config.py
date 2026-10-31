@@ -20,16 +20,34 @@ _SESS_RE = _re.compile(r"sessid-[0-9]+")
 
 
 def fresh_proxy() -> str:
-    """Ganti sessid pada PROXY Oxylabs agar tiap panggilan dapat IP baru
+    """URL proxy untuk akun ini.
+
+    USE_PETANI_PROXY=True → kembalikan forward gateway PetaniProxy
+    (127.0.0.1:8888): PetaniProxy sudah otomatis merotasi IP keluar per request,
+    jadi tidak perlu ganti sessid manual seperti Oxylabs.
+    Sebaliknya (Oxylabs): ganti sessid agar tiap panggilan dapat IP baru
     (sticky session sesstime-N mengunci ke 1 IP; reset sessid = IP baru,
-    menghindari HTTP 429 setelah beberapa request dari IP sama)."""
+    menghindari HTTP 429 setelah beberapa request dari IP sama).
+    """
+    if USE_PETANI_PROXY:
+        return PROXY_PETANI
     return _SESS_RE.sub(f"sessid-{_uuid.uuid4().hex[:12]}", PROXY)
 
 
 PROXY = "http://customer-resi_8ca33b6f-sessid-0628953669-sesstime-10:SVfb3=otN13f@pr.oxylabs.io:7777"
 
+# ===== PetaniProxy rotation (mode favorit) =====
+# Arahkan channel 'proxy' ke forward gateway PetaniProxy 127.0.0.1:8888 →
+# tiap request memakai IP keluar yang dirotasi otomatis oleh PetaniProxy.
+# Jalankan dulu: `python ~/PROJECT/FARM/petani-proxy/main.py --serve 8888 --target 20`.
+PROXY_PETANI = "http://127.0.0.1:8888"
+USE_PETANI_PROXY = True   # True = pakai PetaniProxy, False = Oxylabs
+PETANI_STATUS_URL = "http://127.0.0.1:8888/api/status"
+PETANI_RANDOM_URL = "http://127.0.0.1:8888/api/random"
+PETANI_ALL_URL = "http://127.0.0.1:8888/api/all"
+
 # Proxy Gateway (opsional: dari petani-proxy harvester)
-PROXY_GATEWAY = "http://127.0.0.1:8888"  # kosongkan jika tidak digunakan
+PROXY_GATEWAY = ""  # kosongkan jika tidak digunakan
 HARVEST_MAX_PROXIES = 50  # maksimal proxy di panen per siklus
 REQUEST_TIMEOUT = 45
 

@@ -34,8 +34,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import (ACCOUNTS_FILE, APIKEY_FILE, AUTO_RESET_STATE, AUTO_SYNC_9ROUTER,
                     BATCH_DIR, CHANNEL, DELAY_BETWEEN_ACCOUNTS, GONKA_API_BASE, LOG_FILE,
-                    MAIL_DOMAIN, MAX_ACCOUNTS, OTP_POLL_TIMEOUT, PROXY,
-                    REQUEST_TIMEOUT, RETRY_MAX, ROUTER9_PREFIX, WORKERS, fresh_proxy)
+                    MAIL_DOMAIN, MAX_ACCOUNTS, OTP_POLL_TIMEOUT, PETANI_STATUS_URL, PROXY,
+                    REQUEST_TIMEOUT, RETRY_MAX, ROUTER9_PREFIX, USE_PETANI_PROXY, WORKERS,
+                    fresh_proxy)
 from gonka import GonkaClient, log
 from mail import MailClient
 
@@ -341,7 +342,12 @@ def worker(mail: MailClient, q: "queue.Queue[tuple[int, bool]]", results: dict) 
 def cmd_farm(args) -> None:
     n = args.accounts or MAX_ACCOUNTS or 0
     workers = max(1, args.workers or WORKERS)
-    log(f"GONKAFARM start | target={n or 'unlimited'} workers={workers} proxy={PROXY}")
+    _proxy_mode = "petani:127.0.0.1:8888" if USE_PETANI_PROXY else "oxylabs"
+    log(f"GONKAFARM start | target={n or 'unlimited'} workers={workers} proxy={_proxy_mode}")
+    if USE_PETANI_PROXY and not petani_status()["up"]:
+        log("⚠️  PetaniProxy TIDAK terdeteksi di 127.0.0.1:8888 — jalankan "
+            "`python ~/PROJECT/FARM/petani-proxy/main.py --serve 8888 --target 20` "
+            "di terminal terpisah.")
 
     state = load_state()
     start_seq = state["seq"] + 1
@@ -443,7 +449,12 @@ def cmd_probe(args) -> None:
 def cmd_unlimited(args) -> None:
     """Mode unlimited: farm tanpa batas + auto-sync 9router + notifikasi periodik."""
     workers = max(1, args.workers or WORKERS)
-    log(f"GONKAFARM UNLIMITED | workers={workers} notify={args.notify}s proxy={PROXY}")
+    _proxy_mode = "petani:127.0.0.1:8888" if USE_PETANI_PROXY else "oxylabs"
+    log(f"GONKAFARM UNLIMITED | workers={workers} notify={args.notify}s proxy={_proxy_mode}")
+    if USE_PETANI_PROXY and not petani_status()["up"]:
+        log("⚠️  PetaniProxy TIDAK terdeteksi di 127.0.0.1:8888 — jalankan "
+            "`python ~/PROJECT/FARM/petani-proxy/main.py --serve 8888 --target 20` "
+            "di terminal terpisah.")
 
     state = load_state()
     seq = state["seq"] + 1
@@ -640,10 +651,37 @@ def prompt_sync(header: str) -> None:
             return
 
 
+def petani_status() -> dict:
+    """Cek kesehatan forward gateway PetaniProxy (pool size, uptime, routed)."""
+    empty = {"up": False, "note": "PetaniProxy TIDAK berjalan"}
+    try:
+        with urllib.request.urlopen(PETANI_STATUS_URL, timeout=5) as r:
+            d = json.loads(r.read()) or {}
+            s = d.get("stats", {})
+            return {
+                "up": True,
+                "pool": s.get("pool_size", 0),
+                "routed": s.get("total_routed_requests", 0),
+                "uptime": s.get("uptime_seconds", 0),
+                "failed": s.get("failed_requests", 0),
+            }
+    except Exception as e:
+        empty["note"] = f"PetaniProxy mati/refused: {str(e)[:60]}"
+        return empty
+
+
 def cmd_status(args) -> None:
-    """Cek status akun: jumlah key & key valid di Apikey.txt."""
+    """Cek status akun: jumlah key, 9proxy gateway (petani) health."""
     from gonka import log as glog
-    log_line = f"{time.strftime('%H:%M:%S')} [STATUS] Apikey.txt={len(_read_keys())} 9router={len(list_gonka())} up={time.time()-_stats['started']:.0f}s"
+    mode = "petani" if USE_PETANI_PROXY else "oxylabs"
+    ps = petani_status()
+    if ps["up"]:
+        extra = f" petani pool={ps['pool']} routed={ps['routed']} up={int(ps['uptime'])}s"
+    else:
+        extra = f" {ps['note']}"
+    log_line = (f"{time.strftime('%H:%M:%S')} [STATUS] Apikey.txt={len(_read_keys())} "
+                f"9router={len(list_gonka())} proxy_mode={mode}{extra} "
+                f"up={time.time()-_stats['started']:.0f}s")
     print(log_line, flush=True)
     try:
         with open(LOG_PATH, "a") as f:
@@ -661,10 +699,19 @@ def cmd_config(args) -> None:
         print(f"  2. auto_sync_9r   = {AUTO_SYNC_9ROUTER}")
         print(f"  3. router9_prefix = {ROUTER9_PREFIX}")
         print(f"  4. proxy          = {PROXY}")
+        print(f"  5. proxy_mode     = {'petani' if USE_PETANI_PROXY else 'oxylabs'}")
         print("  0. kembali")
-        p = input("  Pilih [1-4/0]: ").strip()
+        p = input("  Pilih [1-5/0]: ").strip()
         if p == "0" or not p:
             return
+        if p == "5":
+            new = input("  proxy_mode (petani/oxylabs): ").strip().lower()
+            if new in ("petani", "oxylabs"):
+                _persist_config("USE_PETANI_PROXY", "True" if new == "petani" else "False")
+                print(f"  ✓ USE_PETANI_PROXY = {new} (efektif sesi berikutnya)")
+            else:
+                print("  nilai harus petani/oxylabs")
+            continue
         key_map = {"1": "WORKERS", "2": "AUTO_SYNC_9ROUTER", "3": "ROUTER9_PREFIX", "4": "PROXY"}
         key = key_map.get(p)
         if not key:
@@ -687,8 +734,8 @@ def _persist_config(key: str, val: str) -> None:
     text = cfg_path.read_text()
     if key in ("WORKERS",):
         new_line = f"{key} = {int(val)}"
-    elif key in ("AUTO_SYNC_9ROUTER",):
-        new_line = f"{key} = {'True' if val.lower() in ('1', 'true', 'on', 'ya') else 'False'}"
+    elif key in ("AUTO_SYNC_9ROUTER", "USE_PETANI_PROXY"):
+        new_line = f"{key} = {'True' if val.lower() in ('1', 'true', 'on', 'ya', 'petani') else 'False'}"
     else:
         new_line = f'{key} = "{val}"'
     pattern = _re.compile(rf"^{key}\s*=.*$", _re.M)
@@ -714,6 +761,8 @@ def main() -> None:
                    help="channel untuk probe")
     p.add_argument("--bonus", action="store_true",
                    help="aktifkan first-call bonus per akun lalu cek saldo (lebih lambat)")
+    p.add_argument("--proxy-status", action="store_true",
+                   help="cek kesehatan gateway PetaniProxy (pool, routed, uptime)")
     args = p.parse_args()
 
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -725,6 +774,13 @@ def main() -> None:
         cmd_sync(args)
     elif args.status:
         cmd_status(args)
+    elif args.proxy_status:
+        ps = petani_status()
+        if ps["up"]:
+            print(f"PetaniProxy OK — pool={ps['pool']} routed={ps['routed']} "
+                  f"failed={ps['failed']} uptime={int(ps['uptime'])}s")
+        else:
+            print(f"⚠️  {ps['note']}")
     elif args.probe:
         cmd_probe(args)
     else:
