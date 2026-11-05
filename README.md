@@ -2,6 +2,8 @@
 
 [English](#english) | [Bahasa Indonesia](#bahasa-indonesia)
 
+[![Version](https://img.shields.io/badge/version-v0.4.0-blue.svg)](./docs/CHANGELOG.md) [![Changelog](https://img.shields.io/badge/docs-changelog-purple.svg)](./docs/CHANGELOG.md)
+
 ---
 
 ## Bahasa Indonesia
